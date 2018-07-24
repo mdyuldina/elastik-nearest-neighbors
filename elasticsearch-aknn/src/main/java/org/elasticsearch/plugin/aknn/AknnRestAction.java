@@ -59,6 +59,7 @@ public class AknnRestAction extends BaseRestHandler {
     // TODO: check how parameters should be defined at the plugin level.
     private final String HASHES_KEY = "_aknn_hashes";
     private final String VECTOR_KEY = "_aknn_vector";
+    private final String VECTOR_REDUCED_KEY = "_aknn_vector_reduced";
     private final Integer K1_DEFAULT = 99;
     private final Integer K2_DEFAULT = 10;
 
@@ -95,6 +96,7 @@ public class AknnRestAction extends BaseRestHandler {
         return Math.sqrt(squaredDistance);
     }
 
+    @SuppressWarnings("unchecked")
     private RestChannelConsumer handleSearchRequest(RestRequest restRequest, NodeClient client) throws IOException {
 
         StopWatch stopWatch = new StopWatch("StopWatch to Time Search Request");
@@ -106,6 +108,8 @@ public class AknnRestAction extends BaseRestHandler {
         final String id = restRequest.param("id");
         final Integer k1 = restRequest.paramAsInt("k1", K1_DEFAULT);
         final Integer k2 = restRequest.paramAsInt("k2", K2_DEFAULT);
+        final String f = restRequest.param("f");
+        logger.info("Params() " + restRequest.params());
         stopWatch.stop();
 
         logger.info("Get query document at {}/{}/{}", index, type, id);
@@ -116,22 +120,32 @@ public class AknnRestAction extends BaseRestHandler {
 
         logger.info("Parse query document hashes");
         stopWatch.start("Parse query document hashes");
-        @SuppressWarnings("unchecked")
         Map<String, Long> queryHashes = (Map<String, Long>) baseSource.get(HASHES_KEY);
         stopWatch.stop();
 
         stopWatch.start("Parse query document vector");
-        @SuppressWarnings("unchecked")
         List<Double> queryVector = (List<Double>) baseSource.get(VECTOR_KEY);
         stopWatch.stop();
 
         // Retrieve the documents with most matching hashes. https://stackoverflow.com/questions/10773581
         logger.info("Build boolean query from hashes");
         stopWatch.start("Build boolean query from hashes");
-        QueryBuilder queryBuilder = QueryBuilders.boolQuery();
+        QueryBuilder hashQueryBuilder = QueryBuilders.boolQuery();
         for (Map.Entry<String, Long> entry : queryHashes.entrySet()) {
             String termKey = HASHES_KEY + "." + entry.getKey();
-            ((BoolQueryBuilder) queryBuilder).should(QueryBuilders.termQuery(termKey, entry.getValue()));
+            ((BoolQueryBuilder) hashQueryBuilder).should(QueryBuilders.termQuery(termKey, entry.getValue()));
+        }
+        stopWatch.stop();
+
+        logger.info("Build boolean query for filter if exists");
+        stopWatch.start("Build boolean query for filter if exists");
+        BoolQueryBuilder finalQueryBuilder = QueryBuilders.boolQuery();
+        finalQueryBuilder.must(hashQueryBuilder);
+        if (f != null) {
+            int col = f.indexOf(':');
+            if (col > 0) {
+                finalQueryBuilder.filter(QueryBuilders.termQuery(f.substring(0, col), f.substring(col+1)));
+            }
         }
         stopWatch.stop();
 
@@ -141,7 +155,7 @@ public class AknnRestAction extends BaseRestHandler {
                 .prepareSearch(index)
                 .setTypes(type)
                 .setFetchSource("*", HASHES_KEY)
-                .setQuery(queryBuilder)
+                .setQuery(finalQueryBuilder)
                 .setSize(k1)
                 .get();
         stopWatch.stop();
@@ -244,6 +258,7 @@ public class AknnRestAction extends BaseRestHandler {
         };
     }
 
+    @SuppressWarnings("unchecked")
     private RestChannelConsumer handleIndexRequest(RestRequest restRequest, NodeClient client) throws IOException {
 
         StopWatch stopWatch = new StopWatch("StopWatch to time bulk indexing request");
@@ -256,7 +271,6 @@ public class AknnRestAction extends BaseRestHandler {
         final String index = (String) contentMap.get("_index");
         final String type = (String) contentMap.get("_type");
         final String aknnURI = (String) contentMap.get("_aknn_uri");
-        @SuppressWarnings("unchecked")
         final List<Map<String, Object>> docs = (List<Map<String, Object>>) contentMap.get("_aknn_docs");
         logger.info("Received {} docs for indexing", docs.size());
         stopWatch.stop();
@@ -296,11 +310,15 @@ public class AknnRestAction extends BaseRestHandler {
         stopWatch.start("Hash documents for indexing");
         BulkRequestBuilder bulkIndexRequest = client.prepareBulk();
         for (Map<String, Object> doc: docs) {
-            @SuppressWarnings("unchecked")
             Map<String, Object> source = (Map<String, Object>) doc.get("_source");
-            @SuppressWarnings("unchecked")
             List<Double> vector = (List<Double>) source.get(VECTOR_KEY);
             source.put(HASHES_KEY, lshModel.getVectorHashes(vector));
+            List<Double> vectorReduced = (List<Double>) source.get(VECTOR_REDUCED_KEY);
+            if (vectorReduced != null) {
+                source.remove(VECTOR_KEY);
+                source.remove(VECTOR_REDUCED_KEY);
+                source.put(VECTOR_KEY, vectorReduced);
+            }
             bulkIndexRequest.add(client
                     .prepareIndex(index, type, (String) doc.get("_id"))
                     .setSource(source));
