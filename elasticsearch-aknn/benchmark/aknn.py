@@ -51,7 +51,7 @@ def parse_hosts(es_hosts):
     return es_hosts, cycle(es_hosts)
 
 
-def aknn_create(docs_path, es_hosts, es_index, es_type, es_id, description, nb_dimensions, nb_tables, nb_bits, sample_prob, sample_seed):
+def aknn_create(docs_path, es_hosts, es_index, es_type, es_id, description, nb_dimensions, nb_tables, nb_bits, sample_seed):
 
     random.seed(sample_seed)
 
@@ -76,14 +76,25 @@ def aknn_create(docs_path, es_hosts, es_index, es_type, es_id, description, nb_d
         "_aknn_vector_sample": []
     }
 
+    num_docs = 0
+    num_docs += sum(1 for line in open(docs_path))
+    print("There are %d docs in file" % (num_docs))
     nb_samples = 2 * nb_tables * nb_bits
+    sample_prob = nb_samples / float(num_docs)
+    if sample_prob > 1:
+        sample_prob = 1
     print("Collecting %d sample vectors" % (nb_samples))
+    print("Sample prob =  %.3lf" % (sample_prob))
     while len(body["_aknn_vector_sample"]) < nb_samples:
-        doc = next(doc_iterator)
+        try:
+            doc = next(doc_iterator)
+        except StopIteration:
+            doc_iterator = iter_local_docs(docs_path)
+            doc = next(doc_iterator)
         if random.random() <= sample_prob:
             body["_aknn_vector_sample"].append(doc["_source"]["_aknn_vector"])
 
-    print("Collected samples with mean %.3lf, standard deviation %.3lf" % (
+    print("Collected %d samples with mean %.3lf, standard deviation %.3lf" % (len(body["_aknn_vector_sample"]),
         np.mean(body["_aknn_vector_sample"]), np.std(body["_aknn_vector_sample"])))
 
     print("Posting to Elasticsearch")
@@ -98,12 +109,17 @@ def aknn_create(docs_path, es_hosts, es_index, es_type, es_id, description, nb_d
         sys.exit(1)
 
 
-def aknn_index(docs_path, es_hosts, es_index, es_type, aknn_uri, nb_batch, nb_total_max, skip_existing):
+def aknn_index(docs_path, es_hosts, es_index, es_type, aknn_uri, nb_batch, nb_total_max, skip_existing, reduce):
 
     assert es_index.lower() == es_index, "Index must be lowercase."
     assert es_type.lower() == es_type, "Type must be lowercase."
 
-    print("Indexing %d docs at %s/%s using model at %s" % (
+    num_docs = 0
+    num_docs += sum(1 for line in open(docs_path))
+
+    nb_total_max = min(nb_total_max, num_docs)
+
+    print("Indexing max %d docs at %s/%s using model at %s" % (
         nb_total_max, es_index, es_type, aknn_uri))
 
     T0 = time()
@@ -144,6 +160,9 @@ def aknn_index(docs_path, es_hosts, es_index, es_type, aknn_uri, nb_batch, nb_to
         # Skip if it already exists in index.
         if doc["_id"] in skip_ids:
             continue
+
+        if not reduce:
+            doc['_source'].pop('_aknn_vector_reduced', None)
 
         # Add a new doc to the payload and decrement counters.
         docs_batch.append(doc)
@@ -261,10 +280,10 @@ def aknn_benchmark(es_hosts, docs_path, metrics_dir, nb_dimensions, nb_batch, nb
 
     # Define the space of parameters to test. If you change any of these
     # parameters, it's safest to delete all of the metrics files.
-    nb_docs_space = [10 ** 4, 10 ** 5, 10 ** 6]
-    nb_tables_space = [10, 50, 100, 200, 250, 300]
-    nb_bits_space = [8, 12, 14, 16, 18, 19]
-    k1_space = [int(k2 * 1.5), k2 * 10, k2 * 25, k2 * 50, k2 * 100]
+    nb_docs_space = [2500, 5000, 10000]
+    nb_tables_space = [16, 32, 64]
+    nb_bits_space = [8, 16]
+    k1_space = [int(k2 * 1.5), k2 * 10, k2 * 25]
 
     # One test for each combination of parameters.
     nb_tests_total = len(nb_tables_space) * \
@@ -294,7 +313,6 @@ def aknn_benchmark(es_hosts, docs_path, metrics_dir, nb_dimensions, nb_batch, nb
             nb_dimensions=nb_dimensions,
             nb_tables=nb_tables,
             nb_bits=nb_bits,
-            sample_prob=0.3,
             sample_seed=865)
 
         # Run tests for each corpus size. Add to the corpus incrementally.
@@ -324,7 +342,8 @@ def aknn_benchmark(es_hosts, docs_path, metrics_dir, nb_dimensions, nb_batch, nb
                 aknn_uri="%s/%s/%s" % (model_index, model_type, model_id),
                 nb_batch=metrics["nb_batch"],
                 nb_total_max=nb_docs,
-                skip_existing=True)
+                skip_existing=True,
+                reduce=False)
 
             print("Collecting %d ids and vectors for exact KNN" % (nb_docs))
             ids, vecs = [], np.zeros((nb_docs, nb_dimensions), dtype="float32")
@@ -375,6 +394,8 @@ def aknn_benchmark(es_hosts, docs_path, metrics_dir, nb_dimensions, nb_batch, nb
                             len(a.intersection(b)) / k2)
 
                 # Write results to file.
+                if not os.path.exists(metrics_dir):
+                    os.makedirs(metrics_dir)
                 s1 = "Saving metrics to %s" % get_metrics_path(metrics)
                 print("%s\n%s" % ("-" * len(s1), s1))
                 with open(get_metrics_path(metrics), "w") as fp:
@@ -398,7 +419,6 @@ if __name__ == "__main__":
     sp = sp_base.add_parser("create")
     sp.set_defaults(which="create")
     sp.add_argument("docs_path", type=str)
-    sp.add_argument("--sample_prob", type=float, default=0.3)
     sp.add_argument("--sample_seed", type=int, default=865)
     sp.add_argument("--es_index", type=str, default="aknn_models")
     sp.add_argument("--es_type", type=str, default="aknn_model")
@@ -417,6 +437,7 @@ if __name__ == "__main__":
     sp.add_argument("--nb_batch", type=int, default=5000)
     sp.add_argument("--nb_total_max", type=int, default=100000)
     sp.add_argument("--skip_existing", action="store_true")
+    sp.add_argument("--reduce", action="store_true")
 
     sp = sp_base.add_parser("benchmark")
     sp.set_defaults(which="benchmark")
@@ -434,6 +455,9 @@ if __name__ == "__main__":
 
     if action == "create":
         aknn_create(**args)
+
+    if action == "index":
+        aknn_index(**args)
 
     if action == "benchmark":
         aknn_benchmark(**args)
