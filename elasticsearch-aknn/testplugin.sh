@@ -10,8 +10,22 @@ gradle clean build -x integTestRunner -x test
 $ESBIN/elasticsearch-plugin remove elasticsearch-aknn | true
 $ESBIN/elasticsearch-plugin install -b $PLUGINPATH
 
+export ES_HEAP_SIZE=12g
 sudo sysctl -w vm.max_map_count=262144
-export ES_HEAP_SIZE=12g 
+# most probably line above will cause an error on mac. The solution is following:
+#
+# run:
+#
+# screen ~/Library/Containers/com.docker.docker/Data/com.docker.driver.amd64-linux/tty
+#
+# If it asks you for a username and password, Log in with root and no password.
+# If it just has a blank screen, press RETURN.
+#
+# Then configure the sysctl setting as you would for Linux:
+# sysctl -w vm.max_map_count=262144
+#
+# Exit by Control-A Control-\
+
 $ESBIN/elasticsearch
 
 
