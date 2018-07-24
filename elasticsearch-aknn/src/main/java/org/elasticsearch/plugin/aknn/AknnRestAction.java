@@ -149,6 +149,11 @@ public class AknnRestAction extends BaseRestHandler {
         }
         stopWatch.stop();
 
+        logger.info("Exclude id of doc that is searched");
+        stopWatch.start("Exclude id of doc that is searched");
+            finalQueryBuilder.mustNot(QueryBuilders.termQuery("_id", id));
+        stopWatch.stop();
+
         logger.info("Execute boolean search");
         stopWatch.start("Execute boolean search");
         SearchResponse approximateSearchResponse = client
