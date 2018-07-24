@@ -1,5 +1,3 @@
-import org.elasticsearch.gradle.test.RestIntegTestTask
-
 buildscript {
   repositories {
     mavenCentral()
@@ -15,8 +13,8 @@ group = 'org.elasticsearch.plugin.aknn'
 version = '0.0.1-SNAPSHOT'
 
 apply plugin: 'java'
-apply plugin: 'elasticsearch.esplugin'
 apply plugin: 'idea'
+apply plugin: 'elasticsearch.esplugin'
 
 // license of this project
 licenseFile = rootProject.file('LICENSE.txt')
