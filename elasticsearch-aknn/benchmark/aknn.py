@@ -18,6 +18,7 @@ import pdb
 import random
 import requests
 import sys
+from tqdm import tqdm
 
 
 def iter_local_docs(docs_path, skip=0, stop=sys.maxsize):
@@ -346,22 +347,27 @@ def aknn_benchmark(es_hosts, docs_path, metrics_dir, nb_dimensions, nb_batch, nb
                 reduce=False)
 
             print("Collecting %d ids and vectors for exact KNN" % (nb_docs))
+            pbar = tqdm(desc="Processing docs...", total=nb_docs)
             ids, vecs = [], np.zeros((nb_docs, nb_dimensions), dtype="float32")
             for doc in iter_es_docs(
                     es_host=next(es_hosts_c),
                     es_index=vecs_index,
                     es_type=vecs_type,
                     query={"_source": ["_aknn_vector"]}):
+                if (len(ids) >= nb_docs):
+                    break
                 ids.append(doc["_id"])
                 vecs[len(ids) - 1] = np.array(doc["_source"]["_aknn_vector"])
+                pbar.update(1)
+
+            pbar.close()
 
             ii = random.sample(range(nb_docs), nb_eval)
             ids_sample = [ids[i] for i in ii]
             vecs_sample = vecs[ii]
 
             print("Running exact KNN")
-            model = NearestNeighbors(
-                k2 + 1, metric="euclidean", algorithm="brute")
+            model = NearestNeighbors(k2 + 1, metric="euclidean", algorithm="brute")
             model.fit(vecs)
             nbrs_exact = model.kneighbors(vecs_sample, return_distance=False)
 
@@ -378,19 +384,19 @@ def aknn_benchmark(es_hosts, docs_path, metrics_dir, nb_dimensions, nb_batch, nb
                     es_type=vecs_type,
                     es_ids=ids_sample,
                     k1=k1,
-                    k2=k2 + 1,
+                    k2=k2,
                     nb_requests=nb_eval,
                     nb_workers=1)
 
                 # Compute recall for each set of hits.
+                print("Compute recalls")
                 metrics["search_recalls"] = []
                 for i in range(len(ids_sample)):
                     a = set([ids[i] for i in nbrs_exact[i]])
                     b = set([h["_id"] for h in search_hits[i]])
-                    if ids_sample[i] in a and ids_sample[i] in b:
+                    if ids_sample[i] in a:
                         a.remove(ids_sample[i])
-                        b.remove(ids_sample[i])
-                        metrics["search_recalls"].append(
+                    metrics["search_recalls"].append(
                             len(a.intersection(b)) / k2)
 
                 # Write results to file.
