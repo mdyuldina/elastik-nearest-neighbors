@@ -79,8 +79,14 @@ def aknn_create(docs_path, es_hosts, es_index, es_type, es_id, description, nb_d
 
     num_docs = 0
     num_docs += sum(1 for line in open(docs_path))
+    if num_docs < nb_dimensions:
+        print("Not enough docs. Must be at least %d" % (nb_dimensions))
+        return
+
     print("There are %d docs in file" % (num_docs))
     nb_samples = 2 * nb_tables * nb_bits
+    if nb_samples > num_docs:
+        nb_samples = num_docs
     sample_prob = nb_samples / float(num_docs)
     if sample_prob > 1:
         sample_prob = 1
